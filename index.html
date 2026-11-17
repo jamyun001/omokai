@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>오목 AI (렌주룰)</title>
+<title>오목 AI (렌주룰) — 수의 이유를 %로</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@400;600;900&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
@@ -440,7 +440,7 @@ function genMoves(side, width) {
 
 // ---- 알파베타 탐색 ----
 const ABORT = { abort: true };
-let nodes = 0, deadline = 0;
+let nodes = 0, deadline = 0, nodeLimit = Infinity;
 const WIDTH = [12, 9, 8, 7, 6, 6, 5, 5, 5, 5];
 function leaf(side) {
   const o = 3 - side;
@@ -451,7 +451,7 @@ function leaf(side) {
 }
 function search(depth, alpha, beta, side, ply) {
   nodes++;
-  if ((nodes & 511) === 0 && Date.now() > deadline) throw ABORT;
+  if (nodes > nodeLimit || ((nodes & 511) === 0 && Date.now() > deadline)) throw ABORT;
   const opp = 3 - side;
   if (T5[opp] > 0) return -(WIN - ply);
   if (depth <= 0) return leaf(side);
@@ -472,9 +472,12 @@ function search(depth, alpha, beta, side, ply) {
   }
   const a0 = alpha;
   let best = -Infinity, bestM = ms[0].c;
+  const f0 = T4[side] + T4o[side];
   for (const m of ms) {
     place(m.c, side);
-    const v = -search(depth - 1, -beta, -alpha, opp, ply + 1);
+    // 4를 만드는 수는 상대 응수가 강제되므로 깊이를 줄이지 않고 끝까지 읽는다
+    const ext = (ply < 18 && T4[side] + T4o[side] > f0) ? 1 : 0;
+    const v = -search(depth - 1 + ext, -beta, -alpha, opp, ply + 1);
     undo(m.c);
     if (v > best) { best = v; bestM = m.c; }
     if (v > alpha) alpha = v;
@@ -628,10 +631,11 @@ function wpOf(v) {
   if (v <= -400000) return 0.05;
   return Math.min(0.97, Math.max(0.03, 1 / (1 + Math.exp(-v / 1500))));
 }
+// 시간 대신 계산량(국면 수)으로 예산을 잡아 기기 속도와 상관없이 같은 깊이로 읽게 함. t는 안전장치용 최대 시간.
 const CFG = [
-  { d: 2, t: 500, w: 8, vcf: 6, vl: 3000, ol: 800, vct: 0 },
-  { d: 6, t: 1200, w: 10, vcf: 10, vl: 15000, ol: 2500, vct: 4 },
-  { d: 10, t: 3000, w: 12, vcf: 14, vl: 40000, ol: 5000, vct: 6 },
+  { d: 2, t: 1500, w: 8, vcf: 6, vl: 3000, ol: 800, vct: 0, sn: 8000, tl: 0, pc: 0 },
+  { d: 8, t: 5000, w: 10, vcf: 12, vl: 20000, ol: 3000, vct: 5, sn: 60000, tl: 3000, pc: 4 },
+  { d: 14, t: 12000, w: 12, vcf: 16, vl: 60000, ol: 8000, vct: 8, sn: +(globalThis.SN || 220000), tl: 8000, pc: 6 },
 ];
 function quickWp(arr, c, me) {
   place(c, me); deadline = Date.now() + 800;
@@ -643,7 +647,7 @@ function think(arr, me, level, n, onProgress, rule) {
   setRule(rule); init(n);
   ttK1.fill(0); ttK2.fill(0);
   const cfg = CFG[level], opp = 3 - me, t0 = Date.now();
-  nodes = 0; setup(arr);
+  nodes = 0; nodeLimit = Infinity; setup(arr);
   const out = { me, mode: 'search', depth: 0, cands: [], excluded: 0, rankH: 0, nCand: 0, vcfLine: null, wp: 0.5 };
   let move = -1;
   if (stones.length === 0) {
@@ -657,11 +661,11 @@ function think(arr, me, level, n, onProgress, rule) {
     } else if (ms.forced === 'block') {
       move = ms[0].c; out.mode = 'block'; out.wp = quickWp(arr, move, me); out.cands = [{ c: move, wp: out.wp }];
     } else {
-      vNodes = 0; vLimit = cfg.vl; vDeadline = t0 + cfg.t * 0.1;
+      vNodes = 0; vLimit = cfg.vl; vDeadline = t0 + cfg.t * 0.15;
       const line = vcf(me, cfg.vcf);
       let vctLine = null;
       if (!line && cfg.vct && T4[opp] + T4o[opp] === 0) {
-        tNodes = 0; tLimit = 3000; tDeadline = Date.now() + cfg.t * 0.15;
+        tNodes = 0; tLimit = cfg.tl; tDeadline = Date.now() + cfg.t * 0.2;
         vctLine = vct(me, cfg.vct);
         if (vctLine && (vctLine.length > 1 || hasFour(pointTypes(vctLine[0], me)))) { /* 연속 4 */ }
       }
@@ -672,7 +676,7 @@ function think(arr, me, level, n, onProgress, rule) {
       } else {
         const cands = ms.slice(0, cfg.w);
         out.nCand = cands.length;
-        const oppEnd = Date.now() + cfg.t * 0.15;
+        const oppEnd = Date.now() + cfg.t * 0.2;
         for (const m of cands) {
           place(m.c, me); vNodes = 0; vLimit = cfg.ol;
           vDeadline = Math.min(oppEnd, Date.now() + cfg.t * 0.25 / cands.length * 2);
@@ -684,7 +688,8 @@ function think(arr, me, level, n, onProgress, rule) {
         if (!safe.length) safe = cands.slice();
         safe.forEach((m, i) => { m.fv = -i; m.exact = false; });
         prog({ depth: 0, maxD: cfg.d, cands: safe.slice(0, 6).map(m => ({ c: m.c, wp: 0.5 })) });
-        deadline = Date.now() + cfg.t * 0.5;
+        deadline = Date.now() + cfg.t * 0.5; nodeLimit = nodes + cfg.sn;
+        const n0 = nodes;
         if (safe.length === 1) out.mode = 'only';
         else for (let d = 1; d <= cfg.d; d++) {
           try {
@@ -703,18 +708,18 @@ function think(arr, me, level, n, onProgress, rule) {
             out.depth = d;
             prog({ depth: d, maxD: cfg.d, cands: safe.slice(0, 6).map(m => ({ c: m.c, wp: wpOf(m.fv) })) });
             if (safe[0].fv >= WIN - 5000) break;
-            if (d >= 2 && Date.now() > t0 + cfg.t * 0.4) break;
+            if (d >= 2 && (nodes - n0) > cfg.sn * 0.4) break;
           } catch (e) { if (e !== ABORT) throw e; setup(arr); break; }
         }
         // 상대의 3·4 필승 수순(VCT)을 허용하지 않는지 위에서부터 확인
         out.excludedVct = 0;
         if (cfg.vct && safe.length > 1) {
-          const end = Date.now() + cfg.t * 0.2;
-          for (let i = 0; i < Math.min(safe.length - 1, 4); i++) {
+          const end = Date.now() + cfg.t * 0.25;
+          for (let i = 0; i < Math.min(safe.length - 1, cfg.pc); i++) {
             if (Date.now() > end) break;
             const m = safe[i];
             place(m.c, me);
-            tNodes = 0; tLimit = 2500; tDeadline = end;
+            tNodes = 0; tLimit = cfg.tl / 2; tDeadline = end;
             const r = vct(opp, cfg.vct - 1);
             const done = tNodes <= tLimit;
             undo(m.c);
@@ -758,7 +763,7 @@ const ENG = new Function(ENGINE_SRC + '\nreturn { forbiddenList };')();
 const coord = c => COLS[c % N] + (N - ((c / N) | 0));
 const COLORS = { atk: '#b8402b', def: '#2f5b86', read: '#b07f24', pos: '#4c7a5b' };
 const TN = { 7: '오목', 6: '열린 4', 5: '4', 4: '열린 3', 3: '닫힌 3', 2: '열린 2', 1: '닫힌 2' };
-const MAXD = [2, 6, 8];
+const MAXD = [2, 8, 14];
 
 let board = new Int8Array(N * N), moves = [], human = 1, ai = 2, level = 2;
 let busy = false, over = false, winCells = null, viewIdx = -1, showCand = false, hover = -1, result = '';
