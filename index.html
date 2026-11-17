@@ -107,12 +107,13 @@ tr.bad td.note{text-decoration:none}
 <div class="wrap">
   <header>
     <h1>오목</h1><span class="seal">AI</span>
-    <p>렌주룰 · 흑은 삼삼·사사·장목 금지, 정확히 다섯 · 백은 제한 없음</p>
+    <p id="ruleText"></p>
   </header>
   <div class="main">
     <div class="boardCol">
       <div class="controls">
         <label class="f">나는 <select id="color"><option value="1">흑 (선공)</option><option value="2">백 (후공)</option></select></label>
+        <label class="f">룰 <select id="rule"><option value="renju" selected>렌주룰</option><option value="free">기본룰</option></select></label>
         <label class="f">판 <select id="size"><option value="19" selected>19×19</option><option value="15">15×15</option></select></label>
         <label class="f">난이도 <select id="level"><option value="0">보통</option><option value="1">어려움</option><option value="2" selected>최강</option></select></label>
         <span class="spacer"></span>
@@ -166,6 +167,8 @@ const PATS = [
   [1, ['11000', '00011', '10100', '00101', '10010', '01001', '10001', '01100', '00110', '01010']],
 ];
 let b = new Int8Array(NN);
+let RENJU = true;
+function setRule(r) { RENJU = r !== 'free'; }
 let stones = [];
 
 function classify(s, me) {
@@ -205,7 +208,7 @@ function typeDir(x, y, d, me) {
     else { const q = b[ny * N + nx]; v = q === 0 ? 0 : (q === me ? 1 : 2); }
     code = code * 3 + v;
   }
-  return TAB[me][code];
+  return (me === 1 && RENJU ? TAB[1] : TAB[2])[code];
 }
 function pointTypes(c, me) {
   const x = c % N, y = (c / N) | 0;
@@ -239,7 +242,14 @@ function init(n) {
   }
   }
   lineCur = new Array(lines.length);
+  Z1 = new Int32Array(NN * 3); Z2 = new Int32Array(NN * 3);
+  let sd = 12345;
+  const r32 = () => { sd ^= sd << 13; sd ^= sd >>> 17; sd ^= sd << 5; return sd | 0; };
+  for (let i = 0; i < NN * 3; i++) { Z1[i] = r32(); Z2[i] = r32(); }
 }
+let Z1 = null, Z2 = null, h1 = 0, h2 = 0;
+const TTS = 1 << 20, TTM = TTS - 1;
+const ttK1 = new Int32Array(TTS), ttK2 = new Int32Array(TTS), ttD = new Int8Array(TTS), ttF = new Int8Array(TTS), ttM = new Int16Array(TTS), ttV = new Float64Array(TTS);
 const RW = {
   f5: /11111/g, o4: /011110/g, f4: /x11110|01111x|11101|11011|10111/g,
   o3: /011100|001110|011010|010110/g,
@@ -258,13 +268,14 @@ function evalStr(s, R) {
 }
 const cache = new Map();
 function lineEntry(id) {
-  let raw = '';
+  let raw = RENJU ? 'r' : 'f';
   for (const c of lines[id]) raw += b[c];
   let e = cache.get(raw);
   if (e) return e;
-  const s1 = 'x' + raw.replace(/2/g, 'x') + 'x';
-  const s2 = 'x' + raw.replace(/1/g, 'x').replace(/2/g, '1') + 'x';
-  e = [evalStr(s1, RB), evalStr(s2, RW)];
+  const body = raw.slice(1);
+  const s1 = 'x' + body.replace(/2/g, 'x') + 'x';
+  const s2 = 'x' + body.replace(/1/g, 'x').replace(/2/g, '1') + 'x';
+  e = [evalStr(s1, RENJU ? RB : RW), evalStr(s2, RW)];
   cache.set(raw, e);
   return e;
 }
@@ -278,11 +289,12 @@ function apply(e, sg) {
 function updateCell(c) {
   for (const id of cellLines[c]) { apply(lineCur[id], -1); lineCur[id] = lineEntry(id); apply(lineCur[id], 1); }
 }
-function place(c, p) { b[c] = p; stones.push(c); updateCell(c); }
-function undo(c) { b[c] = 0; stones.pop(); updateCell(c); }
+function place(c, p) { b[c] = p; stones.push(c); h1 ^= Z1[c * 3 + p]; h2 ^= Z2[c * 3 + p]; updateCell(c); }
+function undo(c) { const p = b[c]; h1 ^= Z1[c * 3 + p]; h2 ^= Z2[c * 3 + p]; b[c] = 0; stones.pop(); updateCell(c); }
 function setup(arr) {
   b.set(arr); stones = [];
-  for (let i = 0; i < NN; i++) if (b[i]) stones.push(i);
+  h1 = 0; h2 = 0;
+  for (let i = 0; i < NN; i++) if (b[i]) { stones.push(i); h1 ^= Z1[i * 3 + b[i]]; h2 ^= Z2[i * 3 + b[i]]; }
   for (const A of [T5, T4o, T4, T3o, TS]) A[0] = A[1] = A[2] = 0;
   for (let id = 0; id < lines.length; id++) { lineCur[id] = lineEntry(id); apply(lineCur[id], 1); }
 }
@@ -392,9 +404,10 @@ function maybeForbidden(c, ts) {
   b[c] = 0;
   return over;
 }
-const forb = (c, ts) => maybeForbidden(c, ts) && isForbidden(c);
-function forbiddenList(arr, n) {
-  init(n); b.set(arr); stones = [];
+const forb = (c, ts) => RENJU && maybeForbidden(c, ts) && isForbidden(c);
+function forbiddenList(arr, n, rule) {
+  setRule(rule); init(n);
+  if (!RENJU) return []; b.set(arr); stones = [];
   for (let i = 0; i < NN; i++) if (b[i]) stones.push(i);
   return nearCells().filter(c => forb(c, pointTypes(c, 1)));
 }
@@ -442,17 +455,33 @@ function search(depth, alpha, beta, side, ply) {
   const opp = 3 - side;
   if (T5[opp] > 0) return -(WIN - ply);
   if (depth <= 0) return leaf(side);
+  const idx = h1 & TTM;
+  let ttMove = -1;
+  if (ttK1[idx] === h1 && ttK2[idx] === h2) {
+    ttMove = ttM[idx];
+    if (ttD[idx] >= depth) {
+      const v = ttV[idx], f = ttF[idx];
+      if (f === 0 || (f === 1 && v >= beta) || (f === 2 && v <= alpha)) return v;
+    }
+  }
   const ms = genMoves(side, WIDTH[ply] || 5);
   if (!ms.length) return 0;
-  let best = -Infinity;
+  if (ttMove >= 0) {
+    const i = ms.findIndex(m => m.c === ttMove);
+    if (i > 0) { const [m] = ms.splice(i, 1); ms.unshift(m); }
+  }
+  const a0 = alpha;
+  let best = -Infinity, bestM = ms[0].c;
   for (const m of ms) {
     place(m.c, side);
     const v = -search(depth - 1, -beta, -alpha, opp, ply + 1);
     undo(m.c);
-    if (v > best) best = v;
+    if (v > best) { best = v; bestM = m.c; }
     if (v > alpha) alpha = v;
     if (alpha >= beta) break;
   }
+  ttK1[idx] = h1; ttK2[idx] = h2; ttD[idx] = depth; ttV[idx] = best; ttM[idx] = bestM;
+  ttF[idx] = best <= a0 ? 2 : best >= beta ? 1 : 0;
   return best;
 }
 
@@ -492,7 +521,7 @@ function vcf(me, depth) {
     if (T4[opp] + T4o[opp] > 0 && findFivePoint(opp) >= 0) { undo(c); continue; }
     const fp = fivePointsAround(c, me);
     if (fp.length >= 2) { undo(c); return [c]; }
-    if (fp.length === 1 && me === 2 && isForbidden(fp[0])) { undo(c); return [c]; } // 흑이 막을 자리가 금수
+    if (fp.length === 1 && me === 2 && RENJU && isForbidden(fp[0])) { undo(c); return [c]; } // 흑이 막을 자리가 금수
     if (fp.length === 1 && depth > 1) {
       place(fp[0], opp);
       let r = null;
@@ -506,6 +535,91 @@ function vcf(me, depth) {
   return null;
 }
 
+// ---- VCT (3과 4로 몰아붙이는 필승 수순) ----
+let tNodes = 0, tLimit = 0, tDeadline = Infinity;
+function lineCellsAround(c) {
+  const x = c % N, y = (c / N) | 0, out = [];
+  for (let d = 0; d < 4; d++) for (let k = -5; k <= 5; k++) {
+    if (!k) continue;
+    const nx = x + DX[d] * k, ny = y + DY[d] * k;
+    if (nx < 0 || ny < 0 || nx >= N || ny >= N) continue;
+    const e = ny * N + nx;
+    if (b[e] === 0 && !out.includes(e)) out.push(e);
+  }
+  return out;
+}
+function stillThreat(cells, me) {
+  for (const e of cells) {
+    if (b[e]) continue;
+    const ts = pointTypes(e, me);
+    if (ts.includes(7)) return true;
+    let f = 0; for (const t of ts) if (t === 5) f++;
+    if ((ts.includes(6) || f >= 2) && !(me === 1 && forb(e, ts))) return true;
+  }
+  return false;
+}
+function defenses(c, me) {
+  const opp = 3 - me, around = lineCellsAround(c), out = [];
+  for (const e of around) {
+    if (opp === 1 && forb(e, pointTypes(e, 1))) continue;
+    place(e, opp);
+    const st = stillThreat(around, me);
+    undo(e);
+    if (!st) out.push(e);
+  }
+  for (const e of nearCells()) {
+    if (out.includes(e)) continue;
+    const ts = pointTypes(e, opp);
+    if (hasFour(ts) && !(opp === 1 && forb(e, ts))) out.push(e);
+  }
+  return out;
+}
+function vct(me, depth) {
+  if (++tNodes > tLimit || Date.now() > tDeadline) { tNodes = tLimit + 1; return null; }
+  const opp = 3 - me;
+  vNodes = 0; vLimit = 400; vDeadline = tDeadline;
+  const vf = vcf(me, 10);
+  if (vf) return vf;
+  if (depth <= 0 || T4[opp] + T4o[opp] > 0) return null;
+  const th = [];
+  for (const c of nearCells()) {
+    const ts = pointTypes(c, me);
+    if (!ts.some(t => t >= 4 && t <= 6)) continue;
+    if (me === 1 && forb(c, ts)) continue;
+    th.push({ c, s: scoreT(ts) + scoreT(pointTypes(c, opp)) * 0.3 });
+  }
+  th.sort((p, q) => q.s - p.s);
+  for (const t of th.slice(0, 9)) {
+    place(t.c, me);
+    let ok = false;
+    const fp = fivePointsAround(t.c, me);
+    if (fp.length >= 2 || (fp.length === 1 && me === 2 && RENJU && isForbidden(fp[0]))) ok = true;
+    else if (fp.length === 1) {
+      place(fp[0], opp);
+      if (!T5[opp] && vct(me, depth - 1)) ok = true;
+      undo(fp[0]);
+    } else {
+      vNodes = 0; vLimit = 300; vDeadline = tDeadline;
+      if (!vcf(opp, 8) && tNodes <= tLimit) {
+        const defs = defenses(t.c, me);
+        if (defs.length && defs.length <= 14) {
+          ok = true;
+          for (const d of defs) {
+            place(d, opp);
+            const r = T5[opp] ? null : vct(me, depth - 1);
+            undo(d);
+            if (!r) { ok = false; break; }
+          }
+        }
+      }
+    }
+    undo(t.c);
+    if (ok) return [t.c];
+    if (tNodes > tLimit) return null;
+  }
+  return null;
+}
+
 // ---- 루트 ----
 function wpOf(v) {
   if (v >= WIN - 5000) return 0.995;
@@ -515,18 +629,19 @@ function wpOf(v) {
   return Math.min(0.97, Math.max(0.03, 1 / (1 + Math.exp(-v / 1500))));
 }
 const CFG = [
-  { d: 2, t: 500, w: 8, vcf: 6, vl: 3000, ol: 800 },
-  { d: 6, t: 1000, w: 10, vcf: 10, vl: 15000, ol: 2500 },
-  { d: 8, t: 2200, w: 12, vcf: 14, vl: 40000, ol: 5000 },
+  { d: 2, t: 500, w: 8, vcf: 6, vl: 3000, ol: 800, vct: 0 },
+  { d: 6, t: 1200, w: 10, vcf: 10, vl: 15000, ol: 2500, vct: 4 },
+  { d: 10, t: 3000, w: 12, vcf: 14, vl: 40000, ol: 5000, vct: 6 },
 ];
 function quickWp(arr, c, me) {
   place(c, me); deadline = Date.now() + 800;
   try { const v = -search(2, -Infinity, Infinity, 3 - me, 1); undo(c); return wpOf(v); }
   catch (e) { if (e !== ABORT) throw e; setup(arr); return 0.5; }
 }
-function think(arr, me, level, n, onProgress) {
+function think(arr, me, level, n, onProgress, rule) {
   const prog = onProgress || (() => {});
-  init(n);
+  setRule(rule); init(n);
+  ttK1.fill(0); ttK2.fill(0);
   const cfg = CFG[level], opp = 3 - me, t0 = Date.now();
   nodes = 0; setup(arr);
   const out = { me, mode: 'search', depth: 0, cands: [], excluded: 0, rankH: 0, nCand: 0, vcfLine: null, wp: 0.5 };
@@ -536,19 +651,28 @@ function think(arr, me, level, n, onProgress) {
   } else {
     const ms = genMoves(me, 0);
     out.fb = ms.filter(m => m.fb).slice(0, 3).map(m => m.c);
+    prog({ depth: -1, maxD: cfg.d, cands: ms.slice(0, 8).map(m => ({ c: m.c, wp: 0.5 })) });
     if (ms.forced === 'win') {
       move = ms[0].c; out.mode = 'win'; out.wp = 1; out.cands = [{ c: move, wp: 1 }];
     } else if (ms.forced === 'block') {
       move = ms[0].c; out.mode = 'block'; out.wp = quickWp(arr, move, me); out.cands = [{ c: move, wp: out.wp }];
     } else {
-      vNodes = 0; vLimit = cfg.vl; vDeadline = t0 + cfg.t * 0.2;
+      vNodes = 0; vLimit = cfg.vl; vDeadline = t0 + cfg.t * 0.1;
       const line = vcf(me, cfg.vcf);
+      let vctLine = null;
+      if (!line && cfg.vct && T4[opp] + T4o[opp] === 0) {
+        tNodes = 0; tLimit = 3000; tDeadline = Date.now() + cfg.t * 0.15;
+        vctLine = vct(me, cfg.vct);
+        if (vctLine && (vctLine.length > 1 || hasFour(pointTypes(vctLine[0], me)))) { /* 연속 4 */ }
+      }
       if (line) {
         move = line[0]; out.mode = 'vcf'; out.vcfLine = line; out.wp = 0.995; out.cands = [{ c: move, wp: 0.995 }];
+      } else if (vctLine) {
+        move = vctLine[0]; out.mode = 'vct'; out.vcfLine = [move]; out.wp = 0.98; out.cands = [{ c: move, wp: 0.98 }];
       } else {
         const cands = ms.slice(0, cfg.w);
         out.nCand = cands.length;
-        const oppEnd = Date.now() + cfg.t * 0.25;
+        const oppEnd = Date.now() + cfg.t * 0.15;
         for (const m of cands) {
           place(m.c, me); vNodes = 0; vLimit = cfg.ol;
           vDeadline = Math.min(oppEnd, Date.now() + cfg.t * 0.25 / cands.length * 2);
@@ -560,7 +684,7 @@ function think(arr, me, level, n, onProgress) {
         if (!safe.length) safe = cands.slice();
         safe.forEach((m, i) => { m.fv = -i; m.exact = false; });
         prog({ depth: 0, maxD: cfg.d, cands: safe.slice(0, 6).map(m => ({ c: m.c, wp: 0.5 })) });
-        deadline = Date.now() + cfg.t * 0.6;
+        deadline = Date.now() + cfg.t * 0.5;
         if (safe.length === 1) out.mode = 'only';
         else for (let d = 1; d <= cfg.d; d++) {
           try {
@@ -582,6 +706,23 @@ function think(arr, me, level, n, onProgress) {
             if (d >= 2 && Date.now() > t0 + cfg.t * 0.4) break;
           } catch (e) { if (e !== ABORT) throw e; setup(arr); break; }
         }
+        // 상대의 3·4 필승 수순(VCT)을 허용하지 않는지 위에서부터 확인
+        out.excludedVct = 0;
+        if (cfg.vct && safe.length > 1) {
+          const end = Date.now() + cfg.t * 0.2;
+          for (let i = 0; i < Math.min(safe.length - 1, 4); i++) {
+            if (Date.now() > end) break;
+            const m = safe[i];
+            place(m.c, me);
+            tNodes = 0; tLimit = 2500; tDeadline = end;
+            const r = vct(opp, cfg.vct - 1);
+            const done = tNodes <= tLimit;
+            undo(m.c);
+            if (r) { m.lose = true; m.fv = -WIN / 2; out.excludedVct++; continue; }
+            if (done || true) break;
+          }
+          safe.sort((p, q) => (p.lose ? 1 : 0) - (q.lose ? 1 : 0) || q.fv - p.fv);
+        }
         move = safe[0].c;
         out.rankH = cands.findIndex(m => m.c === move);
         out.wp = out.depth ? wpOf(safe[0].fv) : 0.5;
@@ -602,12 +743,12 @@ function think(arr, me, level, n, onProgress) {
 }
 if (typeof WorkerGlobalScope !== 'undefined' && self instanceof WorkerGlobalScope) {
   self.onmessage = e => {
-    const { id, board, me, level, n } = e.data;
-    const res = think(board, me, level, n, p => self.postMessage({ id, progress: p }));
+    const { id, board, me, level, n, rule } = e.data;
+    const res = think(board, me, level, n, p => self.postMessage({ id, progress: p }), rule);
     self.postMessage({ id, res });
   };
 }
-if (typeof module !== 'undefined' && module.exports) module.exports = { think, forbiddenList, init };
+if (typeof module !== 'undefined' && module.exports) module.exports = { think, forbiddenList, init, setRule };
 </script>
 <script>
 let N = 19;
@@ -621,7 +762,11 @@ const MAXD = [2, 6, 8];
 
 let board = new Int8Array(N * N), moves = [], human = 1, ai = 2, level = 2;
 let busy = false, over = false, winCells = null, viewIdx = -1, showCand = false, hover = -1, result = '';
-let forbidden = new Set(), showFb = true, flash = '', live = null, hoverCand = -1, whyKey = null;
+let forbidden = new Set(), showFb = true, flash = '', live = null, hoverCand = -1, whyKey = null, rule = 'renju', calc = null;
+const RULE_TEXT = {
+  renju: '렌주룰 · 흑은 삼삼·사사·장목 금지, 정확히 다섯 · 백은 제한 없음',
+  free: '기본룰 · 금수 없음 · 흑백 모두 다섯 개 이상 이으면 승리',
+};
 const placedAt = new Map(); let winAt = 0;
 
 const worker = new Worker(URL.createObjectURL(new Blob([ENGINE_SRC], { type: 'text/javascript' })));
@@ -629,15 +774,19 @@ let reqId = 0;
 worker.onmessage = e => {
   const { id, res, progress } = e.data;
   if (id !== reqId) return;
-  if (progress) { live = progress; renderThinking(); return; }
-  busy = false; live = null;
-  play(res.move, ai, res);
+  if (progress) { live = progress; if (calc) calc.snaps.push(progress); renderThinking(); return; }
+  if (calc) {
+    calc.final = res;
+    calc.snaps.push({ depth: 99, cands: res.cands.length > 1 ? res.cands.slice(0, 8) : [{ c: res.move, wp: res.wp }] });
+  } else { busy = false; live = null; play(res.move, ai, res); }
 };
-function updateForbidden() { forbidden = new Set(over ? [] : ENG.forbiddenList(Array.from(board), N)); }
+function updateForbidden() { forbidden = new Set(over ? [] : ENG.forbiddenList(Array.from(board), N, rule)); }
 function aiTurn() {
   busy = true; reqId++; live = null;
+  const now = performance.now();
+  calc = { start: now, snaps: [], idx: -1, lastAdv: now, final: null, phase: 'scan', phaseAt: 0, disp: new Map(), chosen: -1 };
   renderStatus(); renderThinking();
-  worker.postMessage({ id: reqId, board: Array.from(board), me: ai, level, n: N });
+  worker.postMessage({ id: reqId, board: Array.from(board), me: ai, level, n: N, rule });
 }
 function neighbors(c) {
   const x = c % N, y = (c / N) | 0; let n = 0;
@@ -660,7 +809,7 @@ function checkWin(c, p) {
         cells.push(ny * N + nx); k++;
       }
     }
-    if (p === 1 ? cells.length === 5 : cells.length >= 5) return cells;
+    if (p === 1 && rule === 'renju' ? cells.length === 5 : cells.length >= 5) return cells;
   }
   return null;
 }
@@ -682,7 +831,9 @@ function play(c, p, an) {
   if (!over && p === human) setTimeout(aiTurn, 60);
 }
 function newGame() {
-  reqId++; busy = false; live = null;
+  reqId++; busy = false; live = null; calc = null;
+  rule = document.getElementById('rule').value;
+  document.getElementById('ruleText').textContent = RULE_TEXT[rule];
   human = +document.getElementById('color').value; ai = 3 - human;
   N = +document.getElementById('size').value;
   level = +document.getElementById('level').value;
@@ -696,7 +847,8 @@ function newGame() {
 }
 function undoMove() {
   if (!moves.length) return;
-  if (busy) { reqId++; busy = false; live = null; moves.pop(); }
+  if (calc && calc.phase === 'fade') calc = null;
+  if (busy) { reqId++; busy = false; live = null; calc = null; moves.pop(); }
   else { const last = moves.pop(); if (last.p === ai && moves.length) moves.pop(); }
   board = new Int8Array(N * N);
   for (const m of moves) board[m.c] = m.p;
@@ -719,8 +871,9 @@ function breakdown(an) {
     case 'win': S = 0.4; P = 0.1; break;
     case 'block': S = 0.4; P = 0.1; break;
     case 'vcf': S = 4 + an.vcfLine.length * 0.25; break;
+    case 'vct': S = 4.5; break;
     case 'only': S = 3.5; break;
-    default: S = 0.6 + an.rankH * 0.9 + (an.excluded ? 1.2 : 0) + an.depth * 0.2 + (an.fbNear ? 0.8 : 0);
+    default: S = 0.6 + an.rankH * 0.9 + ((an.excluded || an.excludedVct) ? 1.2 : 0) + an.depth * 0.2 + (an.fbNear ? 0.8 : 0);
   }
   const raw = [A, D, S, P], sum = raw.reduce((s, v) => s + v, 0) || 1;
   const exact = raw.map(v => v / sum * 100), fl = exact.map(Math.floor);
@@ -757,12 +910,14 @@ function bullets(an) {
     li.push(['read', an.vcfLine.length === 1 ? '<b>필승 수.</b> 막을 수 없는 4가 생겨 다음 수에 오목이 완성됩니다.'
       : `<b>필승 수순.</b> 4를 연달아 두어 상대가 막기만 하다 지게 되는 수순입니다: ${seq} <span style="color:var(--muted)">(괄호는 상대가 막는 자리)</span>`]);
   }
+  if (an.mode === 'vct') li.push(['read', '<b>필승 수순.</b> 3과 4를 번갈아 만들며 몰아붙이면, 상대가 어떻게 막아도 결국 이기는 수순(VCT)을 찾았습니다. 이 수가 그 첫 수입니다.']);
   if (an.mode !== 'win') li.push(['atk', atk ? `<b>공격.</b> 이 수로 만든 모양: ${atk}.` : '<b>공격.</b> 이 수로 새로 만든 위협은 크지 않습니다.']);
   if (an.mode !== 'block') li.push(['def', def ? `<b>수비.</b> 상대가 여기 뒀다면 생겼을 모양(${def})을 미리 막았습니다.` : '<b>수비.</b> 이 자리에서 막은 상대의 위협은 크지 않습니다.']);
   if (an.mode === 'search') {
     li.push(['read', `<b>수읽기.</b> ${an.depth}수 앞까지 따져 보고 후보 ${an.nCand}곳 중 승률이 가장 높은 곳을 골랐습니다.` +
       (an.rankH > 0 ? ` 모양만 보면 ${an.rankH + 1}번째 후보였지만, 수를 읽어 보니 이쪽이 낫습니다.` : ' 모양으로 보나 수읽기로 보나 첫째가는 자리입니다.')]);
-    if (an.excluded) li.push(['read', `<b>함정 피하기.</b> 두는 순간 상대에게 필승 수순을 내주는 후보 ${an.excluded}곳은 뺐습니다.`]);
+    const ex = (an.excluded || 0) + (an.excludedVct || 0);
+    if (ex) li.push(['read', `<b>함정 피하기.</b> 두는 순간 상대에게 필승 수순(연속 4 또는 3·4 공격)을 내주는 후보 ${ex}곳은 뺐습니다.`]);
   }
   if (an.mode === 'only') li.push(['read', '<b>유일한 안전수.</b> 다른 후보는 모두 상대에게 필승 수순을 내줍니다.']);
   if (an.fbNear) li.push(['def', `<b>금수 활용.</b> ${an.fbNear}는 흑이 둘 수 없는 금수 자리라 막지 않고 수를 아꼈습니다.`]);
@@ -875,7 +1030,7 @@ function frame(now) {
     ctx.beginPath(); ctx.arc(P(view.c % N) + .5, P((view.c / N) | 0) + .5, cell * 0.52, 0, 7); ctx.stroke();
   }
   // 후보 표시: 기본은 끔. 표의 줄에 마우스를 올렸을 때만 그 자리 하나를 표시
-  const candList = an && !busy && an.cands && an.cands.length > 1 ? an.cands : [];
+  const candList = an && !busy && !calc && an.cands && an.cands.length > 1 ? an.cands : [];
   const drawMark = (c, label, strong) => {
     const x = P(c % N) + .5, y = P((c / N) | 0) + .5;
     ctx.strokeStyle = strong ? '#c23a22' : 'rgba(31,27,22,.7)'; ctx.lineWidth = strong ? 2 : 1.2;
@@ -893,6 +1048,7 @@ function frame(now) {
     if (k && !board[k.c]) drawMark(k.c, k.lose ? '✕' : Math.round(k.wp * 100) + '', true);
     else if (k) { ctx.strokeStyle = '#c23a22'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(P(k.c % N) + .5, P((k.c / N) | 0) + .5, cell * 0.54, 0, 7); ctx.stroke(); }
   }
+  drawCalc(now);
   if (winCells) {
     const pts = winCells.map(c => [P(c % N) + .5, P((c / N) | 0) + .5]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
     const k = ease(Math.min(1, (now - winAt) / 500));
@@ -903,6 +1059,92 @@ function frame(now) {
   if (hover >= 0 && !board[hover] && !busy && !over && turnIsHuman() && !(human === 1 && forbidden.has(hover))) stone(hover, human, 0.4);
   requestAnimationFrame(frame);
 }
+// ---------- 승률 계산 애니메이션 (AI가 생각하는 동안만 보이고 수를 둔 뒤 사라짐) ----------
+function applySnap(s, now) {
+  const keep = new Set();
+  s.cands.forEach((k, i) => {
+    keep.add(k.c);
+    const e = calc.disp.get(k.c) || { cur: null, born: now };
+    e.from = e.cur; e.to = s.depth <= 0 ? null : Math.round(k.wp * 100); e.at = now; e.lose = !!k.lose; e.rank = i;
+    calc.disp.set(k.c, e);
+  });
+  for (const c of [...calc.disp.keys()]) if (!keep.has(c)) calc.disp.delete(c);
+}
+function stepCalc(now) {
+  if (!calc) return;
+  if (calc.phase === 'scan') {
+    if (now - calc.start > 300 && now - calc.lastAdv > (calc.final ? 110 : 260) && calc.idx < calc.snaps.length - 1) {
+      calc.idx++; calc.lastAdv = now; applySnap(calc.snaps[calc.idx], now);
+    }
+    if (calc.final && calc.idx === calc.snaps.length - 1 && now - calc.lastAdv > 450 && now - calc.start > 1300) {
+      calc.phase = 'settle'; calc.phaseAt = now; calc.chosen = calc.final.move;
+    }
+  } else if (calc.phase === 'settle' && now - calc.phaseAt > 500) {
+    calc.phase = 'fade'; calc.phaseAt = now;
+    const res = calc.final;
+    busy = false; live = null;
+    play(res.move, ai, res);
+  } else if (calc.phase === 'fade' && now - calc.phaseAt > 550) {
+    calc = null;
+  }
+}
+function scramble(now, c) {
+  const t = Math.floor(now / 70);
+  const v = Math.sin((t + 1) * 12.9898 + c * 78.233) * 43758.5453;
+  return 10 + Math.floor((v - Math.floor(v)) * 89);
+}
+function label(x, y, text, fill, ink, scale, alpha) {
+  ctx.globalAlpha = alpha;
+  ctx.font = `600 ${Math.max(9, cell * 0.3 * scale)}px 'Noto Serif KR', serif`;
+  const w = Math.max(cell * 0.78, ctx.measureText(text).width + cell * 0.22) * (scale > 1 ? 1.05 : 1), h = cell * 0.5 * scale;
+  ctx.fillStyle = fill; ctx.strokeStyle = ink; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.roundRect(x - w / 2, y - h / 2, w, h, 3); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = ink === '#c23a22' && fill === '#c23a22' ? '#fbf6ec' : ink;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, x, y + 1);
+  ctx.globalAlpha = 1;
+}
+function drawCalc(now) {
+  stepCalc(now);
+  if (!calc || !calc.disp.size) {
+    if (calc && calc.phase === 'scan' && now - calc.start > 120) { // 후보가 정해지기 전: 판을 훑는 표시
+      const c = (N * N - 1) / 2, a = now / 300;
+      ctx.strokeStyle = 'rgba(31,27,22,.35)'; ctx.setLineDash([3, 4]); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(P(c % N) + Math.cos(a) * cell * 2, P((c / N) | 0) + Math.sin(a) * cell * 2, cell * 0.4, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    }
+    return;
+  }
+  const fadeK = calc.phase === 'fade' ? Math.min(1, (now - calc.phaseAt) / 550) : 0;
+  const entries = [...calc.disp.entries()];
+  // 계산 중인 자리를 차례로 짚는 점선 원
+  if (calc.phase === 'scan') {
+    const [c] = entries[Math.floor(now / 140) % entries.length];
+    if (!board[c]) {
+      ctx.strokeStyle = 'rgba(31,27,22,.5)'; ctx.setLineDash([3, 3]); ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.arc(P(c % N) + .5, P((c / N) | 0) + .5, cell * 0.55, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    }
+  }
+  for (const [c, e] of entries) {
+    if (board[c]) continue;
+    const x = P(c % N) + .5, y = P((c / N) | 0) + .5;
+    let v;
+    if (e.to === null) v = scramble(now, c);
+    else {
+      const k = Math.min(1, (now - e.at) / 420);
+      const from = e.from === null ? scramble(now, c) : e.from;
+      v = k < 1 ? Math.round(from + (e.to - from) * ease(k)) : e.to;
+    }
+    e.cur = v;
+    const born = Math.min(1, (now - e.born) / 200);
+    const isChosen = calc.chosen === c;
+    let alpha = born * (1 - fadeK);
+    if (calc.phase === 'settle' && !isChosen) alpha *= 0.35;
+    const text = e.lose && e.to !== null ? '✕' : v + '%';
+    if (isChosen) label(x, y, text, '#c23a22', '#c23a22', 1.15, alpha);
+    else label(x, y, text, 'rgba(250,246,237,.94)', e.rank === 0 && e.to !== null ? '#1f1b16' : 'rgba(31,27,22,.7)', 1, alpha);
+  }
+}
+
 const turnIsHuman = () => (moves.length % 2 === 0 ? 1 : 2) === human;
 
 // ---------- 패널 ----------
@@ -918,7 +1160,7 @@ function renderStatus() {
     if (busy) st.innerHTML = `AI가 생각하고 있습니다<span class="dots3"><span>.</span><span>.</span><span>.</span></span>`;
     else if (flash) st.innerHTML = `<span class="err">✕</span> ${flash}`;
     else st.innerHTML = `${dot(human)} 당신 차례 (${human === 1 ? '흑' : '백'})` +
-      (human === 1 && forbidden.size ? ` <span style="color:var(--muted);font-size:13px">— 빨간 ✕ 자리는 금수입니다</span>` : '');
+      (human === 1 && rule === 'renju' && forbidden.size ? ` <span style="color:var(--muted);font-size:13px">— 빨간 ✕ 자리는 금수입니다</span>` : '');
   }
 }
 function renderThinking() {
@@ -932,9 +1174,9 @@ function renderThinking() {
   }
   const best = live && live.cands && live.cands[0];
   box.querySelector('.t1').innerHTML = !live ? '필승 수순과 함정을 먼저 살피는 중'
-    : d === 0 ? `후보 <b>${live.cands.length}</b>곳을 추렸습니다` : `<b>${d}</b>수 앞까지 읽었습니다 <span style="color:var(--muted)">/ 최대 ${maxD}수</span>`;
-  box.querySelector('.prog i').style.width = (d / maxD * 100) + '%';
-  box.querySelector('.t2').innerHTML = best && d ? `지금까지 가장 좋은 자리: ${coord(best.c)} (승률 ${Math.round(best.wp * 100)}%)` : '';
+    : d <= 0 ? `후보 <b>${live.cands.length}</b>곳을 추렸습니다` : d === 99 ? '결정했습니다' : `<b>${d}</b>수 앞까지 읽었습니다 <span style="color:var(--muted)">/ 최대 ${maxD}수</span>`;
+  box.querySelector('.prog i').style.width = (Math.max(0, Math.min(d, maxD)) / maxD * 100) + '%';
+  box.querySelector('.t2').innerHTML = best && d > 0 && d < 99 ? `지금까지 가장 좋은 자리: ${coord(best.c)} (승률 ${Math.round(best.wp * 100)}%)` : '';
 }
 function renderWhy() {
   if (busy) { renderThinking(); return; }
@@ -947,7 +1189,7 @@ function renderWhy() {
   const an = view.an, bd = breakdown(an);
   const wpPct = Math.round(an.wp * 100);
   const parts = [['atk', '공격', bd.atk], ['def', '수비', bd.def], ['read', '수읽기', bd.read], ['pos', '위치', bd.pos]];
-  const modeTag = { opening: '첫 수', win: '승리', block: '강제 수비', vcf: '필승 수순', only: '유일한 안전수', search: `${an.depth}수 앞 읽기` }[an.mode];
+  const modeTag = { opening: '첫 수', win: '승리', block: '강제 수비', vcf: '필승 수순(4)', vct: '필승 수순(3·4)', only: '유일한 안전수', search: `${an.depth}수 앞 읽기` }[an.mode];
   box.innerHTML = `
     <div class="head"><span class="co">${coord(an.move)}</span><span class="n">제${an.num}수 · ${an.me === 1 ? '흑' : '백'}</span><span class="mode">${modeTag}</span>
       ${an.nodes ? `<span class="meta">${an.nodes.toLocaleString()}국면 · ${(an.ms / 1000).toFixed(2)}초</span>` : ''}</div>
@@ -968,7 +1210,7 @@ function renderWhy() {
   });
 
   if (an.cands.length <= 1) {
-    cbox.innerHTML = `<div class="empty">${an.mode === 'opening' ? '첫 수라 비교할 후보가 없습니다.' : '고민할 필요가 없는 수(승리·강제 수비·필승 수순)라 다른 후보는 따지지 않았습니다.'}</div>`;
+    cbox.innerHTML = `<div class="empty">${an.mode === 'opening' ? '첫 수라 비교할 후보가 없습니다.' : '고민할 필요가 없는 수(승리, 강제 수비, 필승 수순)라 다른 후보는 따지지 않았습니다.'}</div>`;
   } else {
     cbox.innerHTML = `<table><thead><tr><th>자리</th><th>예상 승률</th><th></th><th></th></tr></thead><tbody>${an.cands.slice(0, 8).map(k => {
       const p = Math.round(k.wp * 100);
@@ -1031,6 +1273,7 @@ document.getElementById('newBtn').onclick = newGame;
 document.getElementById('undoBtn').onclick = undoMove;
 document.getElementById('level').onchange = e => { level = +e.target.value; };
 document.getElementById('size').onchange = newGame;
+document.getElementById('rule').onchange = newGame;
 document.getElementById('candTog').onchange = e => { showCand = e.target.checked; };
 document.getElementById('fbTog').onchange = e => { showFb = e.target.checked; };
 document.getElementById('banner').onclick = () => document.getElementById('banner').classList.remove('show');
